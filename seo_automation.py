@@ -26,12 +26,24 @@ def _json_default(obj):
     return str(obj)
 
 
-def choose_h1(h1: Optional[str], keywords: Optional[str]) -> str:
-    if h1 and str(h1).strip():
-        return str(h1).strip()
-    if keywords and str(keywords).strip():
-        return str(keywords).split(",")[0].strip()
-    raise ValueError("Missing H1 and keywords; provide at least one.")
+def slug_to_title(slug: str) -> str:
+    words = slug.replace("-", " ").split()
+    return " ".join(w.capitalize() for w in words)
+
+
+def get_domain_label(url: str) -> str:
+    parsed = urlparse(url)
+    host = parsed.netloc.lower()
+    if host.startswith("www."):
+        host = host[4:]
+    # Take the first label (e.g., tataaig from tataaig.com)
+    label = host.split(".")[0] if host else ""
+    return label
+
+
+def get_brand_from_url(url: str) -> str:
+    label = get_domain_label(url)
+    return label.replace("-", " ").title() if label else ""
 
 
 def truncate_no_midword(text: str, max_len: int) -> str:
@@ -62,11 +74,6 @@ def build_meta_description(h1: str) -> str:
     return truncate_no_midword(desc, 160)
 
 
-def titleize_segment(segment: str) -> str:
-    words = segment.replace("-", " ").split()
-    return " ".join(w.capitalize() for w in words)
-
-
 def build_breadcrumb_schema(url: str) -> str:
     parsed = urlparse(url)
     if not parsed.scheme or not parsed.netloc:
@@ -90,7 +97,7 @@ def build_breadcrumb_schema(url: str) -> str:
             {
                 "@type": "ListItem",
                 "position": i,
-                "name": titleize_segment(seg),
+                "name": slug_to_title(seg),
                 "item": current,
             }
         )
@@ -129,12 +136,11 @@ def build_faq_schema(row: Dict[str, Any]) -> str:
     return wrap_json_ld(data)
 
 
-def build_product_schema(row: Dict[str, Any]) -> str:
+def build_product_schema(row: Dict[str, Any], brand_name: str) -> str:
     required = [
         "product_name",
         "product_url",
         "product_image",
-        "brand_name",
         "product_description",
         "rating_value",
         "best_rating",
@@ -151,7 +157,7 @@ def build_product_schema(row: Dict[str, Any]) -> str:
         "image": row["product_image"],
         "brand": {
             "@type": "Organization",
-            "name": row["brand_name"],
+            "name": brand_name,
         },
         "description": row["product_description"],
         "review": {
@@ -163,22 +169,20 @@ def build_product_schema(row: Dict[str, Any]) -> str:
             },
             "author": {
                 "@type": "Organization",
-                "name": row.get("review_author_name", row["brand_name"]),
+                "name": row.get("review_author_name", brand_name),
             },
         },
     }
     return wrap_json_ld(data)
 
 
-def build_blog_schema(row: Dict[str, Any]) -> str:
+def build_blog_schema(row: Dict[str, Any], publisher_name: str) -> str:
     required = [
         "blog_url",
         "headline",
         "blog_description",
         "blog_image",
-        "publisher_name",
         "publisher_logo",
-        "author_name",
     ]
     for key in required:
         if not row.get(key):
@@ -190,6 +194,8 @@ def build_blog_schema(row: Dict[str, Any]) -> str:
         today = datetime.now(timezone.utc).date().isoformat()
         date_published = date_published or today
         date_modified = date_modified or today
+
+    author_name = row.get("author_name") or publisher_name
 
     data = {
         "@context": "https://schema.org",
@@ -203,11 +209,11 @@ def build_blog_schema(row: Dict[str, Any]) -> str:
         "image": row["blog_image"],
         "author": {
             "@type": "Organization",
-            "name": row["author_name"],
+            "name": author_name,
         },
         "publisher": {
             "@type": "Organization",
-            "name": row["publisher_name"],
+            "name": publisher_name,
             "logo": {
                 "@type": "ImageObject",
                 "url": row["publisher_logo"],
@@ -225,20 +231,32 @@ def wrap_json_ld(data: Dict[str, Any]) -> str:
 
 
 def build_outputs(row: Dict[str, Any]) -> Dict[str, str]:
-    h1 = choose_h1(row.get("h1"), row.get("keywords"))
-    meta_title = build_meta_title(h1, row.get("site_name"))
-    meta_description = build_meta_description(h1)
-
     if not row.get("url"):
         raise ValueError("Missing required field: url")
 
-    breadcrumb_schema = build_breadcrumb_schema(row["url"])
-    product_schema = build_product_schema(row)
+    url = row["url"]
+    # Derive names from domain when not provided
+    derived_brand = get_brand_from_url(url)
+    brand_name = row.get("brand_name") or derived_brand
+    site_name = row.get("site_name") or derived_brand
+    publisher_name = row.get("publisher_name") or derived_brand
+
+    # H1: use explicit value, else derive from URL slug
+    h1 = row.get("h1")
+    if not h1:
+        slug = urlparse(url).path.split("/")[-1] or ""
+        h1 = slug_to_title(slug)
+
+    meta_title = build_meta_title(h1, site_name)
+    meta_description = build_meta_description(h1)
+
+    breadcrumb_schema = build_breadcrumb_schema(url)
+    product_schema = build_product_schema(row, brand_name)
     faq_schema = build_faq_schema(row)
-    blog_schema = build_blog_schema(row)
+    blog_schema = build_blog_schema(row, publisher_name)
 
     return {
-        "url": row["url"],
+        "url": url,
         "meta_title": meta_title,
         "meta_description": meta_description,
         "product_schema": product_schema,
