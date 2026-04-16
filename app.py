@@ -36,13 +36,18 @@ def run():
     output_path = os.path.join(tmp_dir, "seo_output.xlsx")
     file.save(input_path)
 
-    try:
-        subprocess.run(
-            ["python", "seo_automation.py", input_path, "--xlsx", output_path],
-            check=True,
-        )
-    except subprocess.CalledProcessError as exc:
-        return Response(f"Processing failed: {exc}", status=500)
+    result = subprocess.run(
+        ["python", "seo_automation.py", input_path, "--xlsx", output_path],
+        capture_output=True,
+        text=True,
+    )
+
+    if result.returncode != 0:
+        error_text = result.stderr.strip() or result.stdout.strip() or "Unknown processing error"
+        return Response(f"Processing failed:\n{error_text}", status=500)
+
+    if not os.path.exists(output_path):
+        return Response("Processing failed: output file was not created.", status=500)
 
     return send_file(output_path, as_attachment=True, download_name="seo_output.xlsx")
 
