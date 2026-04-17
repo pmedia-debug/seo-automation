@@ -131,6 +131,7 @@ def build_faq_schema(row: Dict[str, Any]) -> str:
     data = {
         "@context": "https://schema.org",
         "@type": "FAQPage",
+        "name": "FAQs",
         "mainEntity": main_entity,
     }
     return wrap_json_ld(data)
