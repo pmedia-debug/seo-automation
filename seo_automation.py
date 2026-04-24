@@ -36,7 +36,6 @@ def get_domain_label(url: str) -> str:
     host = parsed.netloc.lower()
     if host.startswith("www."):
         host = host[4:]
-    # Take the first label (e.g., tataaig from tataaig.com)
     label = host.split(".")[0] if host else ""
     return label
 
@@ -49,15 +48,15 @@ def get_brand_from_url(url: str) -> str:
 def truncate_no_midword(text: str, max_len: int) -> str:
     if len(text) <= max_len:
         return text
-    if max_len <= 1:
-        return "…"[:max_len]
-    limit = max_len - 1
+    if max_len <= 3:
+        return "..."[:max_len]
+    limit = max_len - 3
     trimmed = text[:limit].rstrip()
     if " " in trimmed:
         trimmed = trimmed.rsplit(" ", 1)[0]
     if not trimmed:
         trimmed = text[:limit].rstrip()
-    return f"{trimmed}…"
+    return f"{trimmed}..."
 
 
 def build_meta_title(h1: str, site_name: Optional[str] = None) -> str:
@@ -78,6 +77,7 @@ def build_breadcrumb_schema(url: str) -> str:
     parsed = urlparse(url)
     if not parsed.scheme or not parsed.netloc:
         raise ValueError(f"Invalid URL: {url}")
+
     base = f"{parsed.scheme}://{parsed.netloc}/"
     segments = [s for s in parsed.path.split("/") if s]
 
@@ -112,7 +112,15 @@ def build_breadcrumb_schema(url: str) -> str:
 
 def build_faq_schema(row: Dict[str, Any]) -> str:
     main_entity = []
-    for i in range(1, 6):
+    faq_indexes = set()
+
+    for key in row.keys():
+        if key.startswith("faq_q"):
+            suffix = key.replace("faq_q", "")
+            if suffix.isdigit():
+                faq_indexes.add(int(suffix))
+
+    for i in sorted(faq_indexes):
         q = row.get(f"faq_q{i}")
         a = row.get(f"faq_a{i}")
         if q and a:
@@ -126,12 +134,14 @@ def build_faq_schema(row: Dict[str, Any]) -> str:
                     },
                 }
             )
+
     if not main_entity:
         return ""
+
     data = {
         "@context": "https://schema.org",
-        "@type": "FAQPage",
         "name": "FAQs",
+        "@type": "FAQPage",
         "mainEntity": main_entity,
     }
     return wrap_json_ld(data)
@@ -236,13 +246,11 @@ def build_outputs(row: Dict[str, Any]) -> Dict[str, str]:
         raise ValueError("Missing required field: url")
 
     url = row["url"]
-    # Derive names from domain when not provided
     derived_brand = get_brand_from_url(url)
     brand_name = row.get("brand_name") or derived_brand
     site_name = row.get("site_name") or derived_brand
     publisher_name = row.get("publisher_name") or derived_brand
 
-    # H1: use explicit value, else derive from URL slug
     h1 = row.get("h1")
     if not h1:
         slug = urlparse(url).path.split("/")[-1] or ""
@@ -279,6 +287,7 @@ def read_excel(path: str) -> List[Dict[str, Any]]:
 
     headers = [str(h).strip() if h else "" for h in rows[0]]
     data_rows = []
+
     for r in rows[1:]:
         row_dict = {}
         for idx, val in enumerate(r):
@@ -287,6 +296,7 @@ def read_excel(path: str) -> List[Dict[str, Any]]:
                 row_dict[key] = val
         if any(v is not None and str(v).strip() != "" for v in row_dict.values()):
             data_rows.append(row_dict)
+
     return data_rows
 
 
