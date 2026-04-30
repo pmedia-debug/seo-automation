@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: schemaforge
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --workers 2 --bind 0.0.0.0:$PORT
+    envVars:
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: OAUTH_REDIRECT_URI
+        value: https://schemaforge.onrender.com/auth/callback
+      - key: OAUTHLIB_INSECURE_TRANSPORT
+        value: "0"

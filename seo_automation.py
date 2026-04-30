@@ -1,376 +1,187 @@
 #!/usr/bin/env python3
 """
-SEO on-page tag automation script (Excel input).
-
-Usage:
-  python seo_automation.py input.xlsx
-  python seo_automation.py input.xlsx --xlsx output.xlsx
+seo_automation.py  -  Schema builder.
+Accepts parsed doc_data dict and builds all JSON-LD schema blocks.
 """
 
 import json
-import sys
-from datetime import datetime, timezone, date
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
-try:
-    from openpyxl import Workbook, load_workbook
-except ImportError:
-    Workbook = None
-    load_workbook = None
 
-
-def _json_default(obj):
-    if isinstance(obj, (datetime, date)):
-        return obj.isoformat()
-    return str(obj)
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 def slug_to_title(slug: str) -> str:
-    words = slug.replace("-", " ").split()
-    return " ".join(w.capitalize() for w in words)
+    return " ".join(w.capitalize() for w in slug.replace("-", " ").split())
 
 
-def get_domain_label(url: str) -> str:
+def get_brand(url: str) -> str:
     parsed = urlparse(url)
-    host = parsed.netloc.lower()
-    if host.startswith("www."):
-        host = host[4:]
-    label = host.split(".")[0] if host else ""
-    return label
+    host = parsed.netloc.lower().lstrip("www.")
+    label = host.split(".")[0] if host else "Brand"
+    return label.replace("-", " ").title()
 
 
-def get_brand_from_url(url: str) -> str:
-    label = get_domain_label(url)
-    return label.replace("-", " ").title() if label else ""
-
-
-def truncate_no_midword(text: str, max_len: int) -> str:
+def _truncate(text: str, max_len: int) -> str:
     if len(text) <= max_len:
         return text
-    if max_len <= 3:
-        return "..."[:max_len]
     limit = max_len - 3
     trimmed = text[:limit].rstrip()
     if " " in trimmed:
         trimmed = trimmed.rsplit(" ", 1)[0]
-    if not trimmed:
-        trimmed = text[:limit].rstrip()
-    return f"{trimmed}..."
+    return trimmed + "..."
 
+
+def _wrap(data: Dict) -> str:
+    return (
+        '<script type="application/ld+json">\n'
+        + json.dumps(data, indent=2, ensure_ascii=False)
+        + "\n</script>"
+    )
+
+
+# ── Meta tags ─────────────────────────────────────────────────────────────────
 
 def build_meta_title(h1: str, site_name: Optional[str] = None) -> str:
     base = h1.strip()
     if site_name:
-        candidate = f"{base} | {str(site_name).strip()}"
+        candidate = f"{base} | {site_name.strip()}"
         if len(candidate) <= 60:
             return candidate
-    return truncate_no_midword(base, 60)
+    return _truncate(base, 60)
 
 
-def build_meta_description(h1: str) -> str:
-    desc = f"Learn all about {h1} and how it can benefit you."
-    return truncate_no_midword(desc, 160)
+def build_meta_description(provided: Optional[str], h1: str) -> str:
+    raw = provided.strip() if provided and provided.strip() else (
+        f"Learn all about {h1} and how it can benefit you."
+    )
+    return _truncate(raw, 160)
 
+
+# ── Breadcrumb schema ─────────────────────────────────────────────────────────
 
 def build_breadcrumb_schema(url: str) -> str:
     parsed = urlparse(url)
-    if not parsed.scheme or not parsed.netloc:
-        raise ValueError(f"Invalid URL: {url}")
-
     base = f"{parsed.scheme}://{parsed.netloc}/"
-    segments = [s for s in parsed.path.split("/") if s]
-
-    items = [
-        {
-            "@type": "ListItem",
-            "position": 1,
-            "name": "Home",
-            "item": base,
-        }
-    ]
-
+    segs = [s for s in parsed.path.split("/") if s]
+    items = [{"@type": "ListItem", "position": 1, "name": "Home", "item": base}]
     current = f"{parsed.scheme}://{parsed.netloc}"
-    for i, seg in enumerate(segments, start=2):
-        current = f"{current}/{seg}"
-        items.append(
-            {
-                "@type": "ListItem",
-                "position": i,
-                "name": slug_to_title(seg),
-                "item": current,
-            }
-        )
-
-    data = {
-        "@context": "https://schema.org",
-        "@type": "BreadcrumbList",
-        "itemListElement": items,
-    }
-    return wrap_json_ld(data)
+    for i, seg in enumerate(segs, 2):
+        current += f"/{seg}"
+        items.append({"@type": "ListItem", "position": i,
+                      "name": slug_to_title(seg), "item": current})
+    return _wrap({"@context": "https://schema.org",
+                  "@type": "BreadcrumbList", "itemListElement": items})
 
 
-def build_faq_schema(row: Dict[str, Any]) -> str:
-    main_entity = []
-    faq_indexes = set()
+# ── FAQ schema ────────────────────────────────────────────────────────────────
 
-    for key in row.keys():
-        if key.startswith("faq_q"):
-            suffix = key.replace("faq_q", "")
-            if suffix.isdigit():
-                faq_indexes.add(int(suffix))
-
-    for i in sorted(faq_indexes):
-        q = row.get(f"faq_q{i}")
-        a = row.get(f"faq_a{i}")
-        if q and a:
-            main_entity.append(
-                {
-                    "@type": "Question",
-                    "name": str(q),
-                    "acceptedAnswer": {
-                        "@type": "Answer",
-                        "text": str(a),
-                    },
-                }
-            )
-
-    if not main_entity:
+def build_faq_schema(faqs: List[Dict[str, str]]) -> str:
+    if not faqs:
         return ""
-
-    data = {
+    return _wrap({
         "@context": "https://schema.org",
-        "name": "FAQs",
         "@type": "FAQPage",
-        "mainEntity": main_entity,
-    }
-    return wrap_json_ld(data)
+        "name": "FAQs",
+        "mainEntity": [
+            {"@type": "Question", "name": f["q"],
+             "acceptedAnswer": {"@type": "Answer", "text": f["a"]}}
+            for f in faqs
+        ],
+    })
 
 
-def build_product_schema(row: Dict[str, Any], brand_name: str) -> str:
-    required = [
-        "product_name",
-        "product_url",
-        "product_image",
-        "product_description",
-        "rating_value",
-        "best_rating",
-    ]
-    for key in required:
-        if not row.get(key):
-            raise ValueError(f"Missing required product field: {key}")
+# ── Product schema ────────────────────────────────────────────────────────────
 
-    data = {
+def build_product_schema(
+    *, product_name: str, page_url: str, image_url: str,
+    description: str, brand_name: str, logo_url: Optional[str],
+) -> str:
+    data: Dict[str, Any] = {
         "@context": "https://schema.org",
         "@type": "Product",
-        "name": row["product_name"],
-        "url": row["product_url"],
-        "image": row["product_image"],
-        "brand": {
-            "@type": "Organization",
-            "name": brand_name,
-        },
-        "description": row["product_description"],
-        "review": {
-            "@type": "Review",
-            "reviewRating": {
-                "@type": "Rating",
-                "ratingValue": str(row["rating_value"]),
-                "bestRating": str(row["best_rating"]),
-            },
-            "author": {
-                "@type": "Organization",
-                "name": row.get("review_author_name", brand_name),
-            },
-        },
+        "name": product_name,
+        "url": page_url,
+        "image": image_url,
+        "description": description,
+        "brand": {"@type": "Organization", "name": brand_name},
     }
-    return wrap_json_ld(data)
+    if logo_url:
+        data["brand"]["logo"] = logo_url   # type: ignore[index]
+    return _wrap(data)
 
 
-def build_blog_schema(row: Dict[str, Any], publisher_name: str) -> str:
-    required = [
-        "blog_url",
-        "headline",
-        "blog_description",
-        "blog_image",
-        "publisher_logo",
-    ]
-    for key in required:
-        if not row.get(key):
-            raise ValueError(f"Missing required blog field: {key}")
+# ── Blog / Article schema ─────────────────────────────────────────────────────
 
-    date_published = row.get("date_published")
-    date_modified = row.get("date_modified")
-    if not date_published or not date_modified:
-        today = datetime.now(timezone.utc).date().isoformat()
-        date_published = date_published or today
-        date_modified = date_modified or today
-
-    author_name = row.get("author_name") or publisher_name
-
-    data = {
+def build_blog_schema(
+    *, page_url: str, headline: str, description: str, image_url: str,
+    publisher_name: str, logo_url: Optional[str], author_name: Optional[str] = None,
+) -> str:
+    now = _now_iso()
+    return _wrap({
         "@context": "https://schema.org",
         "@type": "Article",
-        "mainEntityOfPage": {
-            "@type": "WebPage",
-            "@id": row["blog_url"],
-        },
-        "headline": row["headline"],
-        "description": row["blog_description"],
-        "image": row["blog_image"],
-        "author": {
-            "@type": "Organization",
-            "name": author_name,
-        },
+        "mainEntityOfPage": {"@type": "WebPage", "@id": page_url},
+        "headline": headline,
+        "description": description,
+        "image": image_url,
+        "author": {"@type": "Organization", "name": author_name or publisher_name},
         "publisher": {
             "@type": "Organization",
             "name": publisher_name,
-            "logo": {
-                "@type": "ImageObject",
-                "url": row["publisher_logo"],
-            },
+            "logo": {"@type": "ImageObject", "url": logo_url or ""},
         },
-        "datePublished": date_published,
-        "dateModified": date_modified,
-    }
-    return wrap_json_ld(data)
+        "datePublished": now,
+        "dateModified":  now,
+    })
 
 
-def wrap_json_ld(data: Dict[str, Any]) -> str:
-    json_text = json.dumps(data, indent=2, ensure_ascii=False, default=_json_default)
-    return f'<script type="application/ld+json">{json_text}</script>'
+# ── Master builder ─────────────────────────────────────────────────────────────
 
+def build_all_schemas(
+    *, doc_data: Dict[str, Any], schema_type: str,
+    logo_url: Optional[str], banner_url: Optional[str],
+) -> Dict[str, str]:
+    page_url     = doc_data.get("page_url") or ""
+    h1           = doc_data.get("h1") or slug_to_title(
+                        urlparse(page_url).path.split("/")[-1] or "page")
+    product_name = doc_data.get("product_name") or h1
+    faqs         = doc_data.get("faqs") or []
+    image_url    = doc_data.get("image_url") or banner_url or ""
+    brand        = get_brand(page_url) if page_url else "Brand"
+    meta_desc    = build_meta_description(doc_data.get("meta_description"), h1)
+    meta_title   = build_meta_title(h1, brand)
+    breadcrumb   = build_breadcrumb_schema(page_url) if page_url else ""
+    faq          = build_faq_schema(faqs)
 
-def build_outputs(row: Dict[str, Any]) -> Dict[str, str]:
-    if not row.get("url"):
-        raise ValueError("Missing required field: url")
-
-    url = row["url"]
-    derived_brand = get_brand_from_url(url)
-    brand_name = row.get("brand_name") or derived_brand
-    site_name = row.get("site_name") or derived_brand
-    publisher_name = row.get("publisher_name") or derived_brand
-
-    h1 = row.get("h1")
-    if not h1:
-        slug = urlparse(url).path.split("/")[-1] or ""
-        h1 = slug_to_title(slug)
-
-    meta_title = build_meta_title(h1, site_name)
-    meta_description = build_meta_description(h1)
-
-    breadcrumb_schema = build_breadcrumb_schema(url)
-    product_schema = build_product_schema(row, brand_name)
-    faq_schema = build_faq_schema(row)
-    blog_schema = build_blog_schema(row, publisher_name)
-
-    return {
-        "url": url,
-        "meta_title": meta_title,
-        "meta_description": meta_description,
-        "product_schema": product_schema,
-        "breadcrumb_schema": breadcrumb_schema,
-        "faq_schema": faq_schema,
-        "blog_schema": blog_schema,
+    result = {
+        "meta_title":        meta_title,
+        "meta_description":  meta_desc,
+        "breadcrumb_schema": breadcrumb,
+        "faq_schema":        faq,
+        "product_schema":    "",
+        "blog_schema":       "",
     }
 
-
-def read_excel(path: str) -> List[Dict[str, Any]]:
-    if load_workbook is None:
-        raise ValueError("openpyxl is not installed. Run: python3 -m pip install openpyxl")
-
-    wb = load_workbook(path)
-    ws = wb.active
-    rows = list(ws.iter_rows(values_only=True))
-    if not rows:
-        raise ValueError("Excel file is empty.")
-
-    headers = [str(h).strip() if h else "" for h in rows[0]]
-    data_rows = []
-
-    for r in rows[1:]:
-        row_dict = {}
-        for idx, val in enumerate(r):
-            key = headers[idx] if idx < len(headers) else ""
-            if key:
-                row_dict[key] = val
-        if any(v is not None and str(v).strip() != "" for v in row_dict.values()):
-            data_rows.append(row_dict)
-
-    return data_rows
-
-
-def write_xlsx(rows: List[Dict[str, str]], out_path: str) -> None:
-    if Workbook is None:
-        raise ValueError("openpyxl is not installed. Run: python3 -m pip install openpyxl")
-
-    headers = [
-        "url",
-        "meta_title",
-        "meta_description",
-        "product_schema",
-        "breadcrumb_schema",
-        "faq_schema",
-        "blog_schema",
-    ]
-
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "SEO Output"
-    ws.append(headers)
-
-    for row in rows:
-        ws.append([row.get(h, "") for h in headers])
-
-    wb.save(out_path)
-
-
-def main() -> int:
-    if len(sys.argv) not in (2, 4):
-        print("Usage: python seo_automation.py input.xlsx [--xlsx output.xlsx]")
-        return 1
-
-    xlsx_path = None
-    if len(sys.argv) == 4:
-        if sys.argv[2] != "--xlsx":
-            print("Usage: python seo_automation.py input.xlsx [--xlsx output.xlsx]")
-            return 1
-        xlsx_path = sys.argv[3]
-
-    try:
-        rows = read_excel(sys.argv[1])
-
-        outputs_all = []
-        for i, row in enumerate(rows, start=1):
-            outputs = build_outputs(row)
-            outputs_all.append(outputs)
-
-            print(f"=== Page {i} ===")
-            print(f"Meta Title: {outputs['meta_title']}")
-            print(f"Meta Description: {outputs['meta_description']}\n")
-            print("Product Schema:")
-            print(outputs["product_schema"])
-            print()
-            print("Breadcrumb Schema:")
-            print(outputs["breadcrumb_schema"])
-            print()
-            if outputs["faq_schema"]:
-                print("FAQ Schema:")
-                print(outputs["faq_schema"])
-                print()
-            print("Blog Post Schema:")
-            print(outputs["blog_schema"])
-            print()
-
-        if xlsx_path:
-            write_xlsx(outputs_all, xlsx_path)
-            print(f"XLSX saved to: {xlsx_path}")
-
-        return 0
-    except ValueError as exc:
-        print(f"Error: {exc}")
-        return 1
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+    if schema_type == "product":
+        result["product_schema"] = build_product_schema(
+            product_name = product_name,
+            page_url     = page_url,
+            image_url    = image_url,
+            description  = meta_desc,
+            brand_name   = brand,
+            logo_url     = logo_url,
+        )
+    else:
+        result["blog_schema"] = build_blog_schema(
+            page_url       = page_url,
+            headline       = h1,
+            description    = meta_desc,
+            image_url      = image_url,
+            publisher_name = brand,
+            logo_url       = logo_url,
+        )
+    return result
