@@ -45,7 +45,7 @@ _FAQ_HEADING_RE = re.compile(
 # We skip these when auto-detecting the H1 from the first real content line.
 _FIELD_LABEL_RE = re.compile(
     r"^(page\s*url|url|meta\s*desc(?:ription)?|description|h1|h1\s*tag|heading\s*1"
-    r"|product\s*name|product|image(?:\s*url|\s*link)?|brand\s*name"
+    r"|headline|product\s*name|product|image(?:\s*url|\s*link)?|brand\s*name"
     r"|site\s*name|publisher\s*name)\s*[:\-]",
     re.I,
 )
@@ -293,7 +293,7 @@ def _parse(lines: List[str], img_fallbacks: List[str]) -> Dict[str, Any]:
         img = img_fallbacks[0]
 
     # Try explicit label first, then auto-detect from content
-    h1 = _find_field(lines, "H1", "H1 Tag", "Heading 1")
+    h1 = _find_field(lines, "H1", "H1 Tag", "Heading 1", "Headline")
     if not h1:
         h1 = _detect_h1_from_lines(lines)
 
@@ -314,7 +314,7 @@ def _parse_styled(styled_lines: List[Dict], img_fallbacks: List[str]) -> Dict[st
     if not img and img_fallbacks:
         img = img_fallbacks[0]
 
-    h1 = _find_field(lines, "H1", "H1 Tag", "Heading 1")
+    h1 = _find_field(lines, "H1", "H1 Tag", "Heading 1", "Headline")
     if not h1:
         h1 = _detect_h1_from_styled(styled_lines)
 
