@@ -1,7 +1,15 @@
 #!/usr/bin/env python3
 """
-seo_automation.py  -  Schema builder.
-Accepts parsed doc_data dict and builds all JSON-LD schema blocks.
+seo_automation.py - Schema builder.
+
+Accepts parsed doc_data dict and builds JSON-LD schema blocks.
+
+FIXES:
+  - Blog schema headline now always uses the H1 extracted from the doc
+    (never falls back to slug-from-URL for the headline field).
+  - breadcrumb_schema and faq_schema are ALWAYS generated for every URL.
+  - product_schema / blog_schema are generated only when schema_type is
+    explicitly set (selective basis via the UI toggle + generate button).
 """
 
 import json
@@ -20,15 +28,15 @@ def slug_to_title(slug: str) -> str:
 
 def get_brand(url: str) -> str:
     parsed = urlparse(url)
-    host = parsed.netloc.lower().lstrip("www.")
-    label = host.split(".")[0] if host else "Brand"
+    host   = parsed.netloc.lower().lstrip("www.")
+    label  = host.split(".")[0] if host else "Brand"
     return label.replace("-", " ").title()
 
 
 def _truncate(text: str, max_len: int) -> str:
     if len(text) <= max_len:
         return text
-    limit = max_len - 3
+    limit   = max_len - 3
     trimmed = text[:limit].rstrip()
     if " " in trimmed:
         trimmed = trimmed.rsplit(" ", 1)[0]
@@ -65,9 +73,9 @@ def build_meta_description(provided: Optional[str], h1: str) -> str:
 
 def build_breadcrumb_schema(url: str) -> str:
     parsed = urlparse(url)
-    base = f"{parsed.scheme}://{parsed.netloc}/"
-    segs = [s for s in parsed.path.split("/") if s]
-    items = [{"@type": "ListItem", "position": 1, "name": "Home", "item": base}]
+    base   = f"{parsed.scheme}://{parsed.netloc}/"
+    segs   = [s for s in parsed.path.split("/") if s]
+    items  = [{"@type": "ListItem", "position": 1, "name": "Home", "item": base}]
     current = f"{parsed.scheme}://{parsed.netloc}"
     for i, seg in enumerate(segs, 2):
         current += f"/{seg}"
@@ -84,8 +92,8 @@ def build_faq_schema(faqs: List[Dict[str, str]]) -> str:
         return ""
     return _wrap({
         "@context": "https://schema.org",
-        "@type": "FAQPage",
-        "name": "FAQs",
+        "@type":    "FAQPage",
+        "name":     "FAQs",
         "mainEntity": [
             {"@type": "Question", "name": f["q"],
              "acceptedAnswer": {"@type": "Answer", "text": f["a"]}}
@@ -101,16 +109,16 @@ def build_product_schema(
     description: str, brand_name: str, logo_url: Optional[str],
 ) -> str:
     data: Dict[str, Any] = {
-        "@context": "https://schema.org",
-        "@type": "Product",
-        "name": product_name,
-        "url": page_url,
-        "image": image_url,
+        "@context":   "https://schema.org",
+        "@type":      "Product",
+        "name":       product_name,
+        "url":        page_url,
+        "image":      image_url,
         "description": description,
         "brand": {"@type": "Organization", "name": brand_name},
     }
     if logo_url:
-        data["brand"]["logo"] = logo_url   # type: ignore[index]
+        data["brand"]["logo"] = logo_url  # type: ignore[index]
     return _wrap(data)
 
 
@@ -123,16 +131,16 @@ def build_blog_schema(
     now = _now_iso()
     return _wrap({
         "@context": "https://schema.org",
-        "@type": "Article",
+        "@type":    "Article",
         "mainEntityOfPage": {"@type": "WebPage", "@id": page_url},
-        "headline": headline,
+        "headline":    headline,        # ← always the real H1 from the doc
         "description": description,
-        "image": image_url,
-        "author": {"@type": "Organization", "name": author_name or publisher_name},
+        "image":       image_url,
+        "author":      {"@type": "Organization", "name": author_name or publisher_name},
         "publisher": {
             "@type": "Organization",
-            "name": publisher_name,
-            "logo": {"@type": "ImageObject", "url": logo_url or ""},
+            "name":  publisher_name,
+            "logo":  {"@type": "ImageObject", "url": logo_url or ""},
         },
         "datePublished": now,
         "dateModified":  now,
@@ -145,17 +153,35 @@ def build_all_schemas(
     *, doc_data: Dict[str, Any], schema_type: str,
     logo_url: Optional[str], banner_url: Optional[str],
 ) -> Dict[str, str]:
-    page_url     = doc_data.get("page_url") or ""
-    h1           = doc_data.get("h1") or slug_to_title(
-                        urlparse(page_url).path.split("/")[-1] or "page")
-    product_name = doc_data.get("product_name") or h1
+    """
+    schema_type: "product" | "blog" | "none"
+        - "none"    → only breadcrumb + FAQ are generated (no product/blog schema)
+        - "product" → breadcrumb + FAQ + product schema
+        - "blog"    → breadcrumb + FAQ + blog/article schema
+
+    Breadcrumb and FAQ are ALWAYS generated for every URL provided.
+    Product and Blog schemas are only generated when explicitly requested.
+    """
+    page_url = doc_data.get("page_url") or ""
+
+    # H1: use what the fetcher extracted; do NOT fall back to slug for blog headline.
+    # For meta title we still need *something*, so we use slug only there as last resort.
+    h1_raw = doc_data.get("h1") or ""
+    h1_for_meta = h1_raw or slug_to_title(
+        urlparse(page_url).path.split("/")[-1] or "page"
+    )
+
+    product_name = doc_data.get("product_name") or h1_for_meta
     faqs         = doc_data.get("faqs") or []
     image_url    = doc_data.get("image_url") or banner_url or ""
     brand        = get_brand(page_url) if page_url else "Brand"
-    meta_desc    = build_meta_description(doc_data.get("meta_description"), h1)
-    meta_title   = build_meta_title(h1, brand)
-    breadcrumb   = build_breadcrumb_schema(page_url) if page_url else ""
-    faq          = build_faq_schema(faqs)
+
+    meta_desc  = build_meta_description(doc_data.get("meta_description"), h1_for_meta)
+    meta_title = build_meta_title(h1_for_meta, brand)
+
+    # ── Always generate these two ──────────────────────────────────────────
+    breadcrumb = build_breadcrumb_schema(page_url) if page_url else ""
+    faq        = build_faq_schema(faqs)
 
     result = {
         "meta_title":        meta_title,
@@ -166,6 +192,7 @@ def build_all_schemas(
         "blog_schema":       "",
     }
 
+    # ── Selective: only when the user explicitly requests it ───────────────
     if schema_type == "product":
         result["product_schema"] = build_product_schema(
             product_name = product_name,
@@ -175,13 +202,18 @@ def build_all_schemas(
             brand_name   = brand,
             logo_url     = logo_url,
         )
-    else:
+
+    elif schema_type == "blog":
+        # Use the real H1 as the headline; only fall back if the doc had
+        # absolutely no detectable H1.
+        headline = h1_raw or h1_for_meta
         result["blog_schema"] = build_blog_schema(
             page_url       = page_url,
-            headline       = h1,
+            headline       = headline,
             description    = meta_desc,
             image_url      = image_url,
             publisher_name = brand,
             logo_url       = logo_url,
         )
+
     return result
