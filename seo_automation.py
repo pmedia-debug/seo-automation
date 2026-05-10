@@ -217,16 +217,16 @@ def build_all_schemas(
 
     # ── Selective: only when explicitly requested ──────────────────────────
     if schema_type == "product":
-    result["product_schema"] = build_product_schema(
-        product_name = product_name,
-        page_url     = page_url,
-        image_url    = image_url,
-        description  = meta_desc,
-        brand_name   = brand,
-        logo_url     = logo_url,
-        rating_value = doc_data.get("rating_value"),
-        best_rating  = doc_data.get("best_rating"),
-    )
+        result["product_schema"] = build_product_schema(
+            product_name = product_name,
+            page_url     = page_url,
+            image_url    = image_url,
+            description  = meta_desc,
+            brand_name   = brand,
+            logo_url     = logo_url,
+            rating_value = doc_data.get("rating_value"),
+            best_rating  = doc_data.get("best_rating"),
+        )
 
     elif schema_type == "blog":
         result["blog_schema"] = build_blog_schema(
