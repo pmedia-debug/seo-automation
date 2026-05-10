@@ -101,23 +101,44 @@ def build_faq_schema(faqs: List[Dict[str, str]]) -> str:
     })
 
 
-# ── Product schema ────────────────────────────────────────────────────────────
-
+# ── Product schema ─────────────────────────────────────────────────────────────
 def build_product_schema(
-    *, product_name: str, page_url: str, image_url: str,
-    description: str, brand_name: str, logo_url: Optional[str],
+    *,
+    product_name:  str,
+    page_url:      str,
+    image_url:     str,
+    description:   str,
+    brand_name:    str,
+    logo_url:      Optional[str],
+    rating_value:  Optional[str] = None,
+    best_rating:   Optional[str] = None,
 ) -> str:
+
     data: Dict[str, Any] = {
-        "@context":    "https://schema.org",
+        "@context":    "[schema.org](https://schema.org)",
         "@type":       "Product",
         "name":        product_name,
         "url":         page_url,
         "image":       image_url,
         "description": description,
-        "brand":       {"@type": "Organization", "name": brand_name},
+        "brand": {
+            "@type": "Brand",
+            "name":  brand_name,
+        },
+        "provider": {
+            "@type": "Organization",
+            "name":  brand_name,   # ← always auto-filled from brand, no doc input needed
+        },
     }
-    if logo_url:
-        data["brand"]["logo"] = logo_url  # type: ignore[index]
+
+    # aggregateRating only emitted when ratingValue is present in doc
+    if rating_value:
+        data["aggregateRating"] = {
+            "@type":       "AggregateRating",
+            "ratingValue": rating_value,
+            "bestRating":  best_rating or "5",
+        }
+
     return _wrap(data)
 
 
@@ -196,14 +217,16 @@ def build_all_schemas(
 
     # ── Selective: only when explicitly requested ──────────────────────────
     if schema_type == "product":
-        result["product_schema"] = build_product_schema(
-            product_name = product_name,
-            page_url     = page_url,
-            image_url    = image_url,
-            description  = meta_desc,
-            brand_name   = brand,
-            logo_url     = logo_url,
-        )
+    result["product_schema"] = build_product_schema(
+        product_name = product_name,
+        page_url     = page_url,
+        image_url    = image_url,
+        description  = meta_desc,
+        brand_name   = brand,
+        logo_url     = logo_url,
+        rating_value = doc_data.get("rating_value"),
+        best_rating  = doc_data.get("best_rating"),
+    )
 
     elif schema_type == "blog":
         result["blog_schema"] = build_blog_schema(

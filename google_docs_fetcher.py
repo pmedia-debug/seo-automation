@@ -41,7 +41,8 @@ _LABEL_STRIP_RE = re.compile(
     r"|page\s*url|url|meta\s*desc(?:ription)?|description"
     r"|product\s*name|product|image(?:\s*url|\s*link)?"
     r"|brand\s*name|site\s*name|publisher\s*name"
-    r")\s*[:\-]\s*",
+    r"|rating\s*value|ratingvalue|best\s*rating|bestrating"
+    r")\s*[:-]\s*",
     re.I,
 )
 
@@ -241,7 +242,9 @@ _PURE_LABEL_RE = re.compile(
     r"^(?:h1\s*tag|h1|heading\s*1|heading|headline"
     r"|page\s*url|url|meta\s*desc(?:ription)?|description"
     r"|product\s*name|product|image(?:\s*url|\s*link)?"
-    r"|brand\s*name|site\s*name|publisher\s*name)\s*$",
+    r"|brand\s*name|site\s*name|publisher\s*name"
+    r"|rating\s*value|ratingvalue|best\s*rating|bestrating"
+    r")\s*$",
     re.I,
 )
 
@@ -271,13 +274,16 @@ def _parse(lines: List[str], img_fallbacks: List[str]) -> Dict[str, Any]:
                 break
 
     return {
-        "page_url":         _find_field(lines, "Page URL", "Page Url", "URL"),
-        "meta_description": _find_field(lines, "Meta Description", "Meta Desc", "Description"),
-        "h1":               h1,
-        "product_name":     _find_field(lines, "Product Name", "Product"),
-        "image_url":        img,
-        "faqs":             _extract_faqs(lines),
-    }
+    "page_url":         _find_field(lines, "Page URL", "Page Url", "URL"),
+    "meta_description": _find_field(lines, "Meta Description", "Meta Desc", "Description"),
+    "h1":               h1,
+    "product_name":     _find_field(lines, "Product Name", "Product"),
+    "image_url":        img,
+    "faqs":             _extract_faqs(lines),
+    # ── fetched from doc for product schema ────────────────────────────
+    "rating_value":     _find_field(lines, "Rating Value", "ratingValue"),
+    "best_rating":      _find_field(lines, "Best Rating",  "bestRating"),
+}
 
 
 # ── Public API ─────────────────────────────────────────────────────────────────
