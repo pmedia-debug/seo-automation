@@ -17,6 +17,8 @@ CHANGES:
 """
 
 import os
+import io
+import csv
 import json
 from flask import (Flask, request, jsonify, session,
                    redirect, url_for, render_template_string)
@@ -155,6 +157,88 @@ def api_generate():
             results.append({"page_url": url, "error": str(exc)})
 
     return jsonify({"results": results})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Bulk Generate API  (CSV upload)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.route("/api/bulk-generate", methods=["POST"])
+def api_bulk_generate():
+    """Accept a CSV file upload.
+
+    CSV format (no header required, but tolerated):
+      Column A: schema_type  ("none" | "product" | "blog")
+      Column B: Google Docs URL
+
+    Limit: 100 rows max.
+    """
+    if "file" not in request.files:
+        return jsonify({"error": "No file uploaded."}), 400
+
+    f = request.files["file"]
+    if not f or f.filename == "":
+        return jsonify({"error": "Empty file."}), 400
+
+    # Accept .csv or plain text
+    raw_text = f.read().decode("utf-8-sig", errors="replace")
+    reader   = csv.reader(io.StringIO(raw_text))
+
+    rows = []
+    for i, row in enumerate(reader):
+        # Skip blank or header rows
+        if not row or len(row) < 2:
+            continue
+        schema_col = row[0].strip()
+        url_col    = row[1].strip()
+        # Skip header-like rows
+        if schema_col.lower() in ("schema_type", "schema type", "type", "a", "column a", ""):
+            continue
+        if not url_col.startswith("http"):
+            continue
+        if schema_col.lower() not in ("none", "product", "blog"):
+            schema_col = "none"
+        rows.append((schema_col.lower(), url_col))
+        if len(rows) >= 100:
+            break
+
+    if not rows:
+        return jsonify({"error": "No valid rows found. Check CSV format: col A = schema_type, col B = docs URL."}), 400
+
+    token_dict = session.get("token")
+    results = []
+
+    for schema_type, url in rows:
+        try:
+            doc_data = fetch_doc_data(url, token_dict=token_dict)
+            page_url = doc_data.get("page_url") or ""
+            logo_url = banner_url = None
+            if page_url:
+                try:
+                    logo_url, banner_url = fetch_site_assets(page_url)
+                except Exception:
+                    pass
+            outputs = build_all_schemas(
+                doc_data    = doc_data,
+                schema_type = schema_type,
+                logo_url    = logo_url,
+                banner_url  = banner_url,
+            )
+            results.append({
+                "page_url":   page_url,
+                "logo_url":   logo_url,
+                "banner_url": banner_url,
+                "faq_count":  len(doc_data.get("faqs") or []),
+                "h1":         doc_data.get("h1") or "",
+                "auth_mode":  doc_data.get("_auth_mode", "unknown"),
+                "schema_type": schema_type,
+                "docs_url":   url,
+                **outputs,
+            })
+        except Exception as exc:
+            results.append({"page_url": url, "docs_url": url, "error": str(exc)})
+
+    return jsonify({"results": results, "total": len(results)})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -329,10 +413,113 @@ input::placeholder{color:#383860}
   font-size:.85rem;color:var(--warn);
 }
 #auth-notice a{color:#fbbf24;text-decoration:underline}
+
+/* ── Bulk Creation Card ── */
+.bulk-trigger{
+  width:100%;padding:0;border:none;background:transparent;cursor:pointer;
+  display:block;text-align:left;
+}
+.bulk-inner{
+  display:flex;align-items:center;gap:18px;padding:20px 24px;
+  background:linear-gradient(135deg,rgba(124,92,252,.08),rgba(176,106,252,.06));
+  border:2px dashed rgba(124,92,252,.35);border-radius:12px;
+  transition:border-color .2s,background .2s;
+}
+.bulk-trigger:hover .bulk-inner{border-color:var(--accent);background:rgba(124,92,252,.14)}
+.bulk-icon{
+  width:48px;height:48px;flex-shrink:0;border-radius:12px;
+  background:linear-gradient(135deg,var(--accent),var(--accent2));
+  display:flex;align-items:center;justify-content:center;font-size:1.4rem;
+}
+.bulk-text h3{font-size:.95rem;font-weight:700;margin-bottom:4px;color:var(--text)}
+.bulk-text p{font-size:.8rem;color:var(--muted);line-height:1.5}
+.bulk-arrow{margin-left:auto;font-size:1.2rem;color:var(--accent);opacity:.7}
+
+/* ── Modal overlay ── */
+#bulk-modal{
+  display:none;position:fixed;inset:0;z-index:999;
+  background:rgba(5,5,16,.75);backdrop-filter:blur(8px);
+  align-items:center;justify-content:center;padding:20px;
+}
+#bulk-modal.open{display:flex}
+.modal-box{
+  background:#13132b;border:1px solid rgba(124,92,252,.3);
+  border-radius:20px;padding:36px 40px;width:100%;max-width:560px;
+  box-shadow:0 30px 80px rgba(0,0,0,.7),0 0 0 1px rgba(124,92,252,.1);
+  position:relative;
+  animation:fadeUp .25s ease;
+}
+@keyframes fadeUp{from{opacity:0;transform:translateY(18px)}to{opacity:1;transform:none}}
+.modal-close{
+  position:absolute;top:16px;right:18px;background:none;border:none;
+  color:var(--muted);font-size:1.3rem;cursor:pointer;padding:4px 8px;
+  border-radius:6px;transition:color .2s,background .2s;
+}
+.modal-close:hover{color:var(--text);background:rgba(255,255,255,.06)}
+.modal-title{font-size:1.15rem;font-weight:800;margin-bottom:6px;
+  background:linear-gradient(90deg,#fff,#c4b5fd);
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.modal-sub{font-size:.82rem;color:var(--muted);margin-bottom:24px;line-height:1.5}
+
+/* CSV format guide */
+.csv-guide{
+  background:rgba(124,92,252,.06);border:1px solid rgba(124,92,252,.18);
+  border-radius:10px;padding:14px 16px;margin-bottom:22px;
+}
+.csv-guide-title{font-size:.72rem;font-weight:700;color:#c4b5fd;
+  text-transform:uppercase;letter-spacing:.07em;margin-bottom:8px}
+.csv-table{width:100%;border-collapse:collapse;font-size:.76rem}
+.csv-table th,.csv-table td{padding:5px 10px;text-align:left;border:1px solid rgba(124,92,252,.15)}
+.csv-table th{background:rgba(124,92,252,.12);color:#c4b5fd;font-weight:600}
+.csv-table td{color:var(--muted)}
+.csv-table td code{color:#a78bfa;font-family:monospace;font-size:.74rem}
+
+/* File drop zone */
+#drop-zone{
+  border:2px dashed rgba(124,92,252,.35);border-radius:12px;padding:32px 20px;
+  text-align:center;cursor:pointer;transition:border-color .2s,background .2s;
+  margin-bottom:18px;position:relative;
+}
+#drop-zone:hover,#drop-zone.drag-over{
+  border-color:var(--accent);background:rgba(124,92,252,.07);
+}
+#csv-file-input{display:none}
+.drop-icon{font-size:2rem;margin-bottom:8px}
+.drop-label{font-size:.88rem;font-weight:600;color:var(--text);margin-bottom:4px}
+.drop-sub{font-size:.75rem;color:var(--muted)}
+#file-chosen{margin-top:10px;font-size:.78rem;color:var(--success);font-weight:600;display:none}
+
+/* Bulk limit badge */
+.limit-badge{
+  display:inline-flex;align-items:center;gap:6px;padding:5px 12px;
+  background:rgba(251,191,36,.1);border:1px solid rgba(251,191,36,.25);
+  border-radius:20px;font-size:.72rem;color:var(--warn);font-weight:600;margin-bottom:20px;
+}
+
+/* Submit btn */
+.btn-bulk-submit{
+  width:100%;padding:14px;border:none;border-radius:11px;
+  background:linear-gradient(135deg,var(--accent),var(--accent2));
+  color:#fff;font-family:'Inter',sans-serif;font-size:.95rem;font-weight:700;
+  cursor:pointer;letter-spacing:.02em;
+  transition:opacity .2s,transform .15s;
+  display:flex;align-items:center;justify-content:center;gap:10px;
+}
+.btn-bulk-submit:hover{opacity:.9;transform:translateY(-1px)}
+.btn-bulk-submit.loading{opacity:.6;pointer-events:none}
+
+/* Bulk progress */
+#bulk-progress{
+  display:none;margin-top:16px;padding:12px 16px;
+  background:rgba(34,211,160,.06);border:1px solid rgba(34,211,160,.2);
+  border-radius:9px;font-size:.82rem;color:var(--success);
+}
+
 @media(max-width:600px){
   header{padding:0 16px}
   .card{padding:20px 16px}
   .meta-pair{grid-template-columns:1fr}
+  .modal-box{padding:28px 20px}
 }
 </style>
 </head>
@@ -398,9 +585,74 @@ input::placeholder{color:#383860}
     </button>
   </div>
 
+  <!-- ── Bulk Creation Card ── -->
+  <div class="card" style="margin-bottom:20px">
+    <div class="card-title">Bulk Creation <span class="badge">CSV Upload</span></div>
+    <p style="font-size:.82rem;color:var(--muted);margin-bottom:18px;line-height:1.55">
+      Upload a <b style="color:var(--text)">CSV file</b> with up to <b style="color:var(--text)">100 rows</b>.
+      Column A = schema type, Column B = Google Docs URL.
+      All schemas are generated in one click.
+    </p>
+    <button class="bulk-trigger" id="open-bulk-modal" onclick="openBulkModal()">
+      <div class="bulk-inner">
+        <div class="bulk-icon">&#128196;</div>
+        <div class="bulk-text">
+          <h3>Add Bulk Data via CSV</h3>
+          <p>Click to select a .csv file from your computer &mdash; up to 100 pages at once</p>
+        </div>
+        <div class="bulk-arrow">&#8599;</div>
+      </div>
+    </button>
+    <div id="bulk-progress"></div>
+  </div>
+
   <div id="err-box" style="display:none;padding:14px 18px;background:rgba(248,113,113,.08);border:1px solid rgba(248,113,113,.25);border-radius:10px;color:var(--error);font-size:.87rem;margin-bottom:16px"></div>
 
   <div id="results"></div>
+</div>
+
+<!-- ── Bulk Upload Modal ── -->
+<div id="bulk-modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+  <div class="modal-box">
+    <button class="modal-close" onclick="closeBulkModal()" title="Close">&times;</button>
+    <div class="modal-title" id="modal-title">&#128196; Bulk CSV Upload</div>
+    <div class="modal-sub">Generate schemas for up to 100 Google Docs pages from a single CSV file.</div>
+
+    <!-- Format guide -->
+    <div class="csv-guide">
+      <div class="csv-guide-title">&#9432; CSV Format</div>
+      <table class="csv-table">
+        <thead>
+          <tr><th>Column A &mdash; Schema Type</th><th>Column B &mdash; Google Docs URL</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>none</code> / <code>product</code> / <code>blog</code></td><td>https://docs.google.com/document/d/...</td></tr>
+          <tr><td><code>product</code></td><td>https://docs.google.com/document/d/1abc...</td></tr>
+          <tr><td><code>blog</code></td><td>https://docs.google.com/document/d/1xyz...</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="limit-badge">&#9888; Max 100 rows per upload &mdash; extra rows will be ignored</div>
+
+    <!-- Drop zone -->
+    <div id="drop-zone"
+         onclick="document.getElementById('csv-file-input').click()"
+         ondragover="dzDragOver(event)"
+         ondragleave="dzDragLeave(event)"
+         ondrop="dzDrop(event)">
+      <input type="file" id="csv-file-input" accept=".csv,text/csv" onchange="onFileChosen(event)"/>
+      <div class="drop-icon">&#128196;</div>
+      <div class="drop-label">Click to choose a CSV file</div>
+      <div class="drop-sub">or drag and drop here &mdash; .csv files only</div>
+      <div id="file-chosen"></div>
+    </div>
+
+    <button class="btn-bulk-submit" id="bulk-submit-btn" onclick="submitBulk()">
+      <span id="bulk-btn-txt">&#128640; Submit &amp; Generate All</span>
+      <span class="spinner" id="bulk-btn-spin" style="display:none"></span>
+    </button>
+  </div>
 </div>
 
 <script>
@@ -550,6 +802,145 @@ async function generate() {
     btn.classList.remove('loading');
     txt.textContent = '\u2728 Generate Schemas';
     spin.style.display = 'none';
+  }
+}
+
+// ── Bulk Modal ─────────────────────────────────────────────────────────────
+let _chosenFile = null;
+
+function openBulkModal() {
+  document.getElementById('bulk-modal').classList.add('open');
+  document.body.style.overflow = 'hidden';
+}
+function closeBulkModal() {
+  document.getElementById('bulk-modal').classList.remove('open');
+  document.body.style.overflow = '';
+}
+// Close on overlay click
+document.getElementById('bulk-modal').addEventListener('click', function(e) {
+  if (e.target === this) closeBulkModal();
+});
+// ESC key
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape') closeBulkModal();
+});
+
+function onFileChosen(evt) {
+  const file = evt.target.files[0];
+  if (!file) return;
+  _chosenFile = file;
+  const el = document.getElementById('file-chosen');
+  el.textContent = '\u2713 ' + file.name + ' (' + (file.size / 1024).toFixed(1) + ' KB)';
+  el.style.display = 'block';
+}
+
+// Drag & drop helpers
+function dzDragOver(e) { e.preventDefault(); document.getElementById('drop-zone').classList.add('drag-over'); }
+function dzDragLeave()  { document.getElementById('drop-zone').classList.remove('drag-over'); }
+function dzDrop(e) {
+  e.preventDefault();
+  dzDragLeave();
+  const file = e.dataTransfer.files[0];
+  if (!file) return;
+  if (!file.name.endsWith('.csv') && file.type && !file.type.includes('csv')) {
+    alert('Please drop a .csv file.'); return;
+  }
+  _chosenFile = file;
+  const el = document.getElementById('file-chosen');
+  el.textContent = '\u2713 ' + file.name + ' (' + (file.size / 1024).toFixed(1) + ' KB)';
+  el.style.display = 'block';
+}
+
+async function submitBulk() {
+  if (!_chosenFile) { alert('Please select a CSV file first.'); return; }
+
+  const btn  = document.getElementById('bulk-submit-btn');
+  const txt  = document.getElementById('bulk-btn-txt');
+  const spin = document.getElementById('bulk-btn-spin');
+  btn.classList.add('loading');
+  txt.textContent = 'Processing\u2026';
+  spin.style.display = 'inline-block';
+
+  const formData = new FormData();
+  formData.append('file', _chosenFile);
+
+  try {
+    const r    = await fetch('/api/bulk-generate', { method: 'POST', body: formData });
+    const data = await r.json();
+
+    closeBulkModal();
+
+    const errBox = document.getElementById('err-box');
+    const resDiv = document.getElementById('results');
+
+    if (!r.ok) {
+      errBox.textContent = data.error || 'Bulk generation failed.';
+      errBox.style.display = 'block';
+      return;
+    }
+
+    const prog = document.getElementById('bulk-progress');
+    prog.textContent = '\u2713 Bulk run complete: ' + data.total + ' page(s) processed from CSV.';
+    prog.style.display = 'block';
+
+    resDiv.style.display = 'block';
+    resDiv.innerHTML = '';
+
+    // Prepend a bulk run header
+    resDiv.innerHTML = `<div class="page-sep"><hr/><span>&#128196; Bulk CSV Run &mdash; ${data.total} page(s)</span><hr/></div>`;
+
+    data.results.forEach((pg, idx) => {
+      let html = '';
+      html += `<div class="page-sep"><hr/><span>Row ${idx+1} &mdash; ${esc(pg.page_url||pg.docs_url||'Unknown')}</span><hr/></div>`;
+
+      if (pg.error) {
+        html += `<div class="res-card err"><span class="status-err">&#10007; ${esc(pg.error)}</span></div>`;
+      } else {
+        html += '<div class="res-card"><div class="info-strip">';
+        if (pg.page_url)   html += chip('&#128279; URL',   pg.page_url);
+        if (pg.h1)         html += chip('&#128196; H1',    pg.h1);
+        if (pg.schema_type) html += chip('&#9881; Type',  pg.schema_type);
+        if (pg.faq_count)  html += chip('&#10068; FAQs',  pg.faq_count + ' found');
+        if (pg.logo_url)   html += chip('&#127959; Logo', 'Auto-detected');
+        html += `<span class="status-ok" style="margin-left:auto">&#10003; Generated</span>`;
+        html += '</div>';
+
+        html += '<div class="meta-pair">';
+        html += codeBlock('Meta Title',       pg.meta_title);
+        html += codeBlock('Meta Description', pg.meta_description);
+        html += '</div>';
+
+        html += codeBlock('Breadcrumb Schema <span class="badge-always">Always</span>', pg.breadcrumb_schema);
+        if (pg.faq_schema)
+          html += codeBlock('FAQ Schema <span class="badge-always">Always</span>', pg.faq_schema);
+        else
+          html += `<div class="block-wrap" style="padding:12px 14px;background:rgba(251,191,36,.05);border:1px dashed rgba(251,191,36,.2);border-radius:9px;font-size:.78rem;color:var(--warn)">&#9888; No FAQ section detected in this doc.</div>`;
+
+        if (pg.product_schema)
+          html += codeBlock('Product Schema <span class="badge-optional">Optional</span>', pg.product_schema);
+        if (pg.blog_schema)
+          html += codeBlock('Blog / Article Schema <span class="badge-optional">Optional</span>', pg.blog_schema);
+
+        html += '</div>';
+      }
+      resDiv.innerHTML += html;
+    });
+
+    // Scroll to results
+    resDiv.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+  } catch (err) {
+    const errBox = document.getElementById('err-box');
+    errBox.textContent = 'Network error: ' + err.message;
+    errBox.style.display = 'block';
+  } finally {
+    btn.classList.remove('loading');
+    txt.textContent = '\u{1F680} Submit & Generate All';
+    spin.style.display = 'none';
+    // Reset file
+    _chosenFile = null;
+    document.getElementById('csv-file-input').value = '';
+    document.getElementById('file-chosen').style.display = 'none';
   }
 }
 </script>
