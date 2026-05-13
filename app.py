@@ -165,14 +165,17 @@ def api_generate():
 
 @app.route("/api/bulk-generate", methods=["POST"])
 def api_bulk_generate():
-    """Accept a CSV file upload.
+    """Accept a CSV file upload and return a CSV file download.
 
     CSV format (no header required, but tolerated):
       Column A: schema_type  ("none" | "product" | "blog")
       Column B: Google Docs URL
 
     Limit: 100 rows max.
+    Returns: CSV file attachment with all generated schemas.
     """
+    from flask import Response
+
     if "file" not in request.files:
         return jsonify({"error": "No file uploaded."}), 400
 
@@ -206,7 +209,23 @@ def api_bulk_generate():
         return jsonify({"error": "No valid rows found. Check CSV format: col A = schema_type, col B = docs URL."}), 400
 
     token_dict = session.get("token")
-    results = []
+
+    # ── Build output CSV in memory ────────────────────────────────────────
+    output = io.StringIO()
+    writer = csv.writer(output, quoting=csv.QUOTE_ALL, lineterminator="\n")
+
+    # Header row
+    writer.writerow([
+        "Page URL",
+        "Schema Type",
+        "Meta Title",
+        "Meta Description",
+        "Breadcrumb Schema",
+        "FAQ Schema",
+        "Product Schema",
+        "Blog Schema",
+        "Error",
+    ])
 
     for schema_type, url in rows:
         try:
@@ -224,21 +243,30 @@ def api_bulk_generate():
                 logo_url    = logo_url,
                 banner_url  = banner_url,
             )
-            results.append({
-                "page_url":   page_url,
-                "logo_url":   logo_url,
-                "banner_url": banner_url,
-                "faq_count":  len(doc_data.get("faqs") or []),
-                "h1":         doc_data.get("h1") or "",
-                "auth_mode":  doc_data.get("_auth_mode", "unknown"),
-                "schema_type": schema_type,
-                "docs_url":   url,
-                **outputs,
-            })
+            writer.writerow([
+                page_url,
+                schema_type,
+                outputs.get("meta_title", ""),
+                outputs.get("meta_description", ""),
+                outputs.get("breadcrumb_schema", ""),
+                outputs.get("faq_schema", ""),
+                outputs.get("product_schema", ""),
+                outputs.get("blog_schema", ""),
+                "",  # no error
+            ])
         except Exception as exc:
-            results.append({"page_url": url, "docs_url": url, "error": str(exc)})
+            writer.writerow([url, schema_type, "", "", "", "", "", "", str(exc)])
 
-    return jsonify({"results": results, "total": len(results)})
+    csv_bytes = output.getvalue().encode("utf-8-sig")  # BOM for Excel compatibility
+
+    return Response(
+        csv_bytes,
+        mimetype="text/csv",
+        headers={
+            "Content-Disposition": "attachment; filename=schemas_output.csv",
+            "Content-Length": str(len(csv_bytes)),
+        },
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -865,69 +893,39 @@ async function submitBulk() {
   formData.append('file', _chosenFile);
 
   try {
-    const r    = await fetch('/api/bulk-generate', { method: 'POST', body: formData });
-    const data = await r.json();
+    const r = await fetch('/api/bulk-generate', { method: 'POST', body: formData });
 
-    closeBulkModal();
-
-    const errBox = document.getElementById('err-box');
-    const resDiv = document.getElementById('results');
-
+    // If server returns an error (non-CSV), parse as JSON for the message
     if (!r.ok) {
-      errBox.textContent = data.error || 'Bulk generation failed.';
+      const errBox = document.getElementById('err-box');
+      try {
+        const data = await r.json();
+        errBox.textContent = data.error || 'Bulk generation failed.';
+      } catch(_) {
+        errBox.textContent = 'Bulk generation failed (status ' + r.status + ').';
+      }
       errBox.style.display = 'block';
+      closeBulkModal();
       return;
     }
 
+    // ── Trigger CSV download ──────────────────────────────────────────
+    const blob = await r.blob();
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
+    a.download = 'schemas_output.csv';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+
+    // Show success pill in the bulk-progress bar (no panel rendering)
     const prog = document.getElementById('bulk-progress');
-    prog.textContent = '\u2713 Bulk run complete: ' + data.total + ' page(s) processed from CSV.';
+    prog.innerHTML = '\u2713 Bulk run complete &mdash; <b>schemas_output.csv</b> downloaded!';
     prog.style.display = 'block';
 
-    resDiv.style.display = 'block';
-    resDiv.innerHTML = '';
-
-    // Prepend a bulk run header
-    resDiv.innerHTML = `<div class="page-sep"><hr/><span>&#128196; Bulk CSV Run &mdash; ${data.total} page(s)</span><hr/></div>`;
-
-    data.results.forEach((pg, idx) => {
-      let html = '';
-      html += `<div class="page-sep"><hr/><span>Row ${idx+1} &mdash; ${esc(pg.page_url||pg.docs_url||'Unknown')}</span><hr/></div>`;
-
-      if (pg.error) {
-        html += `<div class="res-card err"><span class="status-err">&#10007; ${esc(pg.error)}</span></div>`;
-      } else {
-        html += '<div class="res-card"><div class="info-strip">';
-        if (pg.page_url)   html += chip('&#128279; URL',   pg.page_url);
-        if (pg.h1)         html += chip('&#128196; H1',    pg.h1);
-        if (pg.schema_type) html += chip('&#9881; Type',  pg.schema_type);
-        if (pg.faq_count)  html += chip('&#10068; FAQs',  pg.faq_count + ' found');
-        if (pg.logo_url)   html += chip('&#127959; Logo', 'Auto-detected');
-        html += `<span class="status-ok" style="margin-left:auto">&#10003; Generated</span>`;
-        html += '</div>';
-
-        html += '<div class="meta-pair">';
-        html += codeBlock('Meta Title',       pg.meta_title);
-        html += codeBlock('Meta Description', pg.meta_description);
-        html += '</div>';
-
-        html += codeBlock('Breadcrumb Schema <span class="badge-always">Always</span>', pg.breadcrumb_schema);
-        if (pg.faq_schema)
-          html += codeBlock('FAQ Schema <span class="badge-always">Always</span>', pg.faq_schema);
-        else
-          html += `<div class="block-wrap" style="padding:12px 14px;background:rgba(251,191,36,.05);border:1px dashed rgba(251,191,36,.2);border-radius:9px;font-size:.78rem;color:var(--warn)">&#9888; No FAQ section detected in this doc.</div>`;
-
-        if (pg.product_schema)
-          html += codeBlock('Product Schema <span class="badge-optional">Optional</span>', pg.product_schema);
-        if (pg.blog_schema)
-          html += codeBlock('Blog / Article Schema <span class="badge-optional">Optional</span>', pg.blog_schema);
-
-        html += '</div>';
-      }
-      resDiv.innerHTML += html;
-    });
-
-    // Scroll to results
-    resDiv.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    closeBulkModal();
 
   } catch (err) {
     const errBox = document.getElementById('err-box');
@@ -935,7 +933,7 @@ async function submitBulk() {
     errBox.style.display = 'block';
   } finally {
     btn.classList.remove('loading');
-    txt.textContent = '\u{1F680} Submit & Generate All';
+    txt.textContent = '\u{1F680} Submit \u0026 Generate All';
     spin.style.display = 'none';
     // Reset file
     _chosenFile = null;
