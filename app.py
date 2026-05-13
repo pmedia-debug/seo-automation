@@ -26,8 +26,8 @@ from google_docs_fetcher import (
     fetch_doc_data, credentials_to_dict,
     credentials_from_dict, CLIENT_SECRET_FILE, SCOPES,
 )
-from site_fetcher import fetch_site_assets
-from seo_automation import build_all_schemas
+from site_fetcher import fetch_site_assets, fetch_org_data
+from seo_automation import build_all_schemas, build_organization_schema
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SESSION_SECRET", "dev-secret-change-in-prod")
@@ -157,6 +157,65 @@ def api_generate():
             results.append({"page_url": url, "error": str(exc)})
 
     return jsonify({"results": results})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Organization Schema API
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.route("/api/generate-org", methods=["POST"])
+def api_generate_org():
+    """Generate an Organization schema by scraping the given URL.
+
+    Body (JSON):
+      page_url     : str  – the website URL to scrape
+      rating_value : str  – optional
+      best_rating  : str  – optional
+      rating_count : str  – optional
+    """
+    from urllib.parse import urlparse
+
+    body         = request.get_json(force=True, silent=True) or {}
+    page_url     = (body.get("page_url") or "").strip()
+    rating_value = (body.get("rating_value") or "").strip() or None
+    best_rating  = (body.get("best_rating")  or "").strip() or None
+    rating_count = (body.get("rating_count") or "").strip() or None
+
+    if not page_url or not page_url.startswith("http"):
+        return jsonify({"error": "A valid page_url is required."}), 400
+
+    try:
+        # ── Auto-scrape org data ──────────────────────────────────────────
+        org_info = fetch_org_data(page_url)
+
+        parsed   = urlparse(page_url)
+        host     = parsed.netloc.lstrip("www.")
+        org_name = host.split(".")[0].replace("-", " ").title() if host else "Organization"
+
+        schema = build_organization_schema(
+            org_name     = org_name,
+            page_url     = page_url,
+            logo_url     = org_info.get("logo_url"),
+            description  = org_info.get("description"),
+            same_as      = org_info.get("same_as") or [],
+            telephone    = org_info.get("telephone"),
+            rating_value = rating_value,
+            best_rating  = best_rating,
+            rating_count = rating_count,
+        )
+
+        return jsonify({
+            "org_name":    org_name,
+            "page_url":    page_url,
+            "logo_url":    org_info.get("logo_url"),
+            "description": org_info.get("description"),
+            "same_as":     org_info.get("same_as") or [],
+            "telephone":   org_info.get("telephone"),
+            "org_schema":  schema,
+        })
+
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -634,6 +693,26 @@ input::placeholder{color:#383860}
     <div id="bulk-progress"></div>
   </div>
 
+  <!-- ── Organisation Schema Card ── -->
+  <div class="card" style="margin-bottom:20px">
+    <div class="card-title">Organisation Schema <span class="badge">Auto-Scrape</span></div>
+    <p style="font-size:.82rem;color:var(--muted);margin-bottom:18px;line-height:1.55">
+      Enter your website URL &amp; optional rating data &mdash; brand name, logo, description,
+      social links and contact number are <b style="color:var(--text)">auto-scraped</b> from the site.
+    </p>
+    <button class="bulk-trigger" id="open-org-modal" onclick="openOrgModal()">
+      <div class="bulk-inner">
+        <div class="bulk-icon">&#127963;</div>
+        <div class="bulk-text">
+          <h3>Generate Organisation Schema</h3>
+          <p>Click to enter your URL &amp; rating details &mdash; we scrape the rest automatically</p>
+        </div>
+        <div class="bulk-arrow">&#8599;</div>
+      </div>
+    </button>
+    <div id="org-progress"></div>
+  </div>
+
   <div id="err-box" style="display:none;padding:14px 18px;background:rgba(248,113,113,.08);border:1px solid rgba(248,113,113,.25);border-radius:10px;color:var(--error);font-size:.87rem;margin-bottom:16px"></div>
 
   <div id="results"></div>
@@ -682,6 +761,55 @@ input::placeholder{color:#383860}
     </button>
   </div>
 </div>
+
+<!-- ── Organisation Schema Modal ── -->
+<div id="org-modal" role="dialog" aria-modal="true" aria-labelledby="org-modal-title"
+     style="display:none;position:fixed;inset:0;z-index:999;background:rgba(5,5,16,.75);backdrop-filter:blur(8px);align-items:center;justify-content:center;padding:20px">
+  <div class="modal-box" style="max-width:500px">
+    <button class="modal-close" onclick="closeOrgModal()" title="Close">&times;</button>
+    <div class="modal-title" id="org-modal-title">&#127963; Organisation Schema</div>
+    <div class="modal-sub">Enter your website URL and optional rating data. Logo, description, social links &amp; phone are scraped automatically.</div>
+
+    <!-- Fields -->
+    <div style="display:flex;flex-direction:column;gap:14px;margin-bottom:22px">
+
+      <div>
+        <label class="lbl" for="org-url">Website URL <span style="color:var(--error)">*</span></label>
+        <input type="url" id="org-url" placeholder="https://www.example.com/" style="width:100%;padding:12px 14px;background:var(--surface);border:1px solid var(--border);border-radius:9px;color:var(--text);font-family:'Inter',sans-serif;font-size:.9rem;outline:none;transition:border-color .2s,box-shadow .2s"
+               onfocus="this.style.borderColor='var(--accent)';this.style.boxShadow='0 0 0 3px rgba(124,92,252,.14)'"
+               onblur="this.style.borderColor='var(--border)';this.style.boxShadow='none'"/>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">
+        <div>
+          <label class="lbl" for="org-rating-value">Rating Value</label>
+          <input type="text" id="org-rating-value" placeholder="e.g. 4.8" style="width:100%;padding:10px 12px;background:var(--surface);border:1px solid var(--border);border-radius:9px;color:var(--text);font-family:'Inter',sans-serif;font-size:.85rem;outline:none;transition:border-color .2s"
+                 onfocus="this.style.borderColor='var(--accent)'" onblur="this.style.borderColor='var(--border)'"/>
+        </div>
+        <div>
+          <label class="lbl" for="org-best-rating">Best Rating</label>
+          <input type="text" id="org-best-rating" placeholder="e.g. 5" style="width:100%;padding:10px 12px;background:var(--surface);border:1px solid var(--border);border-radius:9px;color:var(--text);font-family:'Inter',sans-serif;font-size:.85rem;outline:none;transition:border-color .2s"
+                 onfocus="this.style.borderColor='var(--accent)'" onblur="this.style.borderColor='var(--border)'"/>
+        </div>
+        <div>
+          <label class="lbl" for="org-rating-count">Rating Count</label>
+          <input type="text" id="org-rating-count" placeholder="e.g. 15234" style="width:100%;padding:10px 12px;background:var(--surface);border:1px solid var(--border);border-radius:9px;color:var(--text);font-family:'Inter',sans-serif;font-size:.85rem;outline:none;transition:border-color .2s"
+                 onfocus="this.style.borderColor='var(--accent)'" onblur="this.style.borderColor='var(--border)'"/>
+        </div>
+      </div>
+
+      <div style="font-size:.75rem;color:var(--muted);padding:10px 14px;background:rgba(124,92,252,.05);border:1px solid rgba(124,92,252,.15);border-radius:9px;line-height:1.5">
+        &#9432; <b style="color:#c4b5fd">Auto-scraped:</b> Brand name, Logo, Meta description, Social media links (Facebook, Twitter, LinkedIn, Instagram, YouTube) and Contact phone number.
+      </div>
+    </div>
+
+    <button class="btn-bulk-submit" id="org-submit-btn" onclick="submitOrg()">
+      <span id="org-btn-txt">&#127963; Generate Organisation Schema</span>
+      <span class="spinner" id="org-btn-spin" style="display:none"></span>
+    </button>
+  </div>
+</div>
+
 
 <script>
 // ── Auth status ────────────────────────────────────────────────────────────
@@ -848,9 +976,9 @@ function closeBulkModal() {
 document.getElementById('bulk-modal').addEventListener('click', function(e) {
   if (e.target === this) closeBulkModal();
 });
-// ESC key
+// ESC key closes both modals
 document.addEventListener('keydown', function(e) {
-  if (e.key === 'Escape') closeBulkModal();
+  if (e.key === 'Escape') { closeBulkModal(); closeOrgModal(); }
 });
 
 function onFileChosen(evt) {
@@ -939,6 +1067,118 @@ async function submitBulk() {
     _chosenFile = null;
     document.getElementById('csv-file-input').value = '';
     document.getElementById('file-chosen').style.display = 'none';
+  }
+}
+
+// \u2500\u2500 Organisation Modal \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+function openOrgModal() {
+  const m = document.getElementById('org-modal');
+  m.style.display = 'flex';
+  document.body.style.overflow = 'hidden';
+  setTimeout(() => document.getElementById('org-url').focus(), 80);
+}
+function closeOrgModal() {
+  const m = document.getElementById('org-modal');
+  m.style.display = 'none';
+  document.body.style.overflow = '';
+}
+// Close on overlay click
+document.getElementById('org-modal').addEventListener('click', function(e) {
+  if (e.target === this) closeOrgModal();
+});
+
+async function submitOrg() {
+  const pageUrl    = (document.getElementById('org-url').value || '').trim();
+  const ratingVal  = (document.getElementById('org-rating-value').value || '').trim();
+  const bestRating = (document.getElementById('org-best-rating').value  || '').trim();
+  const ratingCnt  = (document.getElementById('org-rating-count').value || '').trim();
+
+  if (!pageUrl) { alert('Please enter a website URL.'); return; }
+
+  const btn  = document.getElementById('org-submit-btn');
+  const txt  = document.getElementById('org-btn-txt');
+  const spin = document.getElementById('org-btn-spin');
+  btn.classList.add('loading');
+  txt.textContent = 'Scraping \u2026';
+  spin.style.display = 'inline-block';
+
+  try {
+    const r    = await fetch('/api/generate-org', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        page_url:     pageUrl,
+        rating_value: ratingVal,
+        best_rating:  bestRating,
+        rating_count: ratingCnt,
+      }),
+    });
+    const data = await r.json();
+
+    closeOrgModal();
+    const errBox = document.getElementById('err-box');
+    const resDiv = document.getElementById('results');
+
+    if (!r.ok) {
+      errBox.textContent = data.error || 'Organisation schema generation failed.';
+      errBox.style.display = 'block';
+      return;
+    }
+
+    // \u2500\u2500 Render result on panel \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+    resDiv.style.display = 'block';
+
+    // Show scraped metadata chips
+    let chips = '';
+    if (data.page_url)    chips += chip('&#128279; URL',     data.page_url);
+    if (data.org_name)    chips += chip('&#127963; Brand',   data.org_name);
+    if (data.logo_url)    chips += chip('&#128247; Logo',    'Auto-detected');
+    if (data.telephone)   chips += chip('&#128222; Phone',   data.telephone);
+    if ((data.same_as||[]).length) chips += chip('&#128279; Social', data.same_as.length + ' links found');
+
+    let html = '<div class="res-card"><div class="info-strip">';
+    html += chips;
+    html += `<span class="status-ok" style="margin-left:auto">&#10003; Generated</span>`;
+    html += '</div>';
+
+    if (data.description) {
+      html += `<div style="font-size:.78rem;color:var(--muted);margin-bottom:14px;padding:10px 14px;
+               background:rgba(124,92,252,.05);border:1px solid rgba(124,92,252,.15);border-radius:8px;line-height:1.55">
+               <b style="color:#c4b5fd">Description:</b> ${esc(data.description)}</div>`;
+    }
+
+    if ((data.same_as||[]).length) {
+      const links = data.same_as.map(u => `<a href="${esc(u)}" target="_blank" style="color:#a78bfa;font-size:.75rem;word-break:break-all">${esc(u)}</a>`).join('<br/>');
+      html += `<div style="font-size:.78rem;margin-bottom:14px;padding:10px 14px;
+               background:rgba(124,92,252,.05);border:1px solid rgba(124,92,252,.15);border-radius:8px;line-height:1.8">
+               <b style="color:#c4b5fd">Social Links:</b><br/>${links}</div>`;
+    }
+
+    html += codeBlock('Organisation Schema <span class="badge-optional">Auto-Scraped</span>', data.org_schema);
+    html += '</div>';
+
+    resDiv.innerHTML = `<div class="page-sep"><hr/><span>&#127963; Organisation Schema \u2014 ${esc(data.org_name || data.page_url)}</span><hr/></div>` + html + resDiv.innerHTML;
+    resDiv.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+    // Update progress chip in org card
+    const prog = document.getElementById('org-progress');
+    prog.innerHTML = '\u2713 Organisation schema generated for <b>' + esc(data.org_name || data.page_url) + '</b>';
+    prog.style.display = 'block';
+
+    // Reset fields
+    document.getElementById('org-url').value = '';
+    document.getElementById('org-rating-value').value = '';
+    document.getElementById('org-best-rating').value  = '';
+    document.getElementById('org-rating-count').value = '';
+
+  } catch (err) {
+    const errBox = document.getElementById('err-box');
+    errBox.textContent = 'Network error: ' + err.message;
+    errBox.style.display = 'block';
+  } finally {
+    btn.classList.remove('loading');
+    txt.textContent = '\u{1F3DB} Generate Organisation Schema';
+    spin.style.display = 'none';
   }
 }
 </script>

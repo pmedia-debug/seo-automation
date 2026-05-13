@@ -146,6 +146,62 @@ def build_product_schema(
     return _wrap(data)
 
 
+# ── Organization schema ────────────────────────────────────────────────────────
+
+def build_organization_schema(
+    *,
+    org_name:     str,
+    page_url:     str,
+    logo_url:     Optional[str],
+    description:  Optional[str],
+    same_as:      Optional[List[str]] = None,
+    telephone:    Optional[str] = None,
+    area_served:  str = "IN",
+    languages:    Optional[List[str]] = None,
+    rating_value: Optional[str] = None,
+    best_rating:  Optional[str] = None,
+    rating_count: Optional[str] = None,
+) -> str:
+
+    data: Dict[str, Any] = {
+        "@context":    "https://schema.org",
+        "@type":       "Organization",
+        "name":        org_name,
+        "url":         page_url,
+    }
+
+    if logo_url:
+        data["logo"] = logo_url
+
+    if description:
+        data["description"] = description
+
+    if same_as:
+        data["sameAs"] = same_as
+
+    contact: Dict[str, Any] = {
+        "@type":       "ContactPoint",
+        "contactType": "customer service",
+        "areaServed":  area_served,
+    }
+    if telephone:
+        contact["telephone"] = telephone
+    contact["availableLanguage"] = languages or ["English"]
+    data["contactPoint"] = contact
+
+    if rating_value:
+        agg: Dict[str, Any] = {
+            "@type":       "AggregateRating",
+            "ratingValue": rating_value,
+            "bestRating":  best_rating or "5",
+        }
+        if rating_count:
+            agg["ratingCount"] = rating_count
+        data["aggregateRating"] = agg
+
+    return _wrap(data)
+
+
 # ── Blog / Article schema ─────────────────────────────────────────────────────
 
 def build_blog_schema(
