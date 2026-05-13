@@ -112,6 +112,7 @@ def build_product_schema(
     logo_url:      Optional[str],
     rating_value:  Optional[str] = None,
     best_rating:   Optional[str] = None,
+    rating_count:  Optional[str] = None,
 ) -> str:
 
     data: Dict[str, Any] = {
@@ -133,11 +134,14 @@ def build_product_schema(
 
     # aggregateRating only emitted when ratingValue is present in doc
     if rating_value:
-        data["aggregateRating"] = {
+        agg: Dict[str, Any] = {
             "@type":       "AggregateRating",
             "ratingValue": rating_value,
             "bestRating":  best_rating or "5",
         }
+        if rating_count:
+            agg["ratingCount"] = rating_count
+        data["aggregateRating"] = agg
 
     return _wrap(data)
 
@@ -226,6 +230,7 @@ def build_all_schemas(
             logo_url     = logo_url,
             rating_value = doc_data.get("rating_value"),
             best_rating  = doc_data.get("best_rating"),
+            rating_count = doc_data.get("rating_count"),
         )
 
     elif schema_type == "blog":

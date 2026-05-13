@@ -42,6 +42,7 @@ _LABEL_STRIP_RE = re.compile(
     r"|product\s*name|product|image(?:\s*url|\s*link)?"
     r"|brand\s*name|site\s*name|publisher\s*name"
     r"|rating\s*value|ratingvalue|best\s*rating|bestrating"
+    r"|rating\s*count|ratingcount"
     r")\s*[:-]\s*",
     re.I,
 )
@@ -244,6 +245,7 @@ _PURE_LABEL_RE = re.compile(
     r"|product\s*name|product|image(?:\s*url|\s*link)?"
     r"|brand\s*name|site\s*name|publisher\s*name"
     r"|rating\s*value|ratingvalue|best\s*rating|bestrating"
+    r"|rating\s*count|ratingcount"
     r")\s*$",
     re.I,
 )
@@ -283,6 +285,7 @@ def _parse(lines: List[str], img_fallbacks: List[str]) -> Dict[str, Any]:
     # ── fetched from doc for product schema ────────────────────────────
     "rating_value":     _find_field(lines, "Rating Value", "ratingValue"),
     "best_rating":      _find_field(lines, "Best Rating",  "bestRating"),
+    "rating_count":     _find_field(lines, "Rating Count", "ratingCount"),
 }
 
 
