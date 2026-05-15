@@ -116,7 +116,7 @@ def build_product_schema(
 ) -> str:
 
     data: Dict[str, Any] = {
-        "@context":    "[schema.org](https://schema.org)",
+        "@context":    "https://schema.org",
         "@type":       "Product",
         "name":        product_name,
         "url":         page_url,
