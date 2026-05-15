@@ -219,22 +219,23 @@ def api_generate_org():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Bulk Generate API  (CSV upload)
+# Bulk Generate API  (chunked — called repeatedly by the frontend)
 # ─────────────────────────────────────────────────────────────────────────────
 
 @app.route("/api/bulk-generate", methods=["POST"])
 def api_bulk_generate():
-    """Accept a CSV file upload and return a CSV file download.
+    """Parse a CSV upload and return the validated rows as JSON.
+
+    The heavy lifting (schema generation) is done by /api/bulk-generate-chunk
+    so each request stays short and never times out.
 
     CSV format (no header required, but tolerated):
       Column A: schema_type  ("none" | "product" | "blog")
       Column B: Google Docs URL
 
     Limit: 100 rows max.
-    Returns: CSV file attachment with all generated schemas.
+    Returns: JSON { rows: [[schema_type, url], ...] }
     """
-    from flask import Response
-
     if "file" not in request.files:
         return jsonify({"error": "No file uploaded."}), 400
 
@@ -242,90 +243,103 @@ def api_bulk_generate():
     if not f or f.filename == "":
         return jsonify({"error": "Empty file."}), 400
 
-    # Accept .csv or plain text
     raw_text = f.read().decode("utf-8-sig", errors="replace")
     reader   = csv.reader(io.StringIO(raw_text))
 
     rows = []
-    for i, row in enumerate(reader):
-        # Skip blank or header rows
+    for row in reader:
         if not row or len(row) < 2:
             continue
         schema_col = row[0].strip()
         url_col    = row[1].strip()
-        # Skip header-like rows
         if schema_col.lower() in ("schema_type", "schema type", "type", "a", "column a", ""):
             continue
         if not url_col.startswith("http"):
             continue
         if schema_col.lower() not in ("none", "product", "blog"):
             schema_col = "none"
-        rows.append((schema_col.lower(), url_col))
+        rows.append([schema_col.lower(), url_col])
         if len(rows) >= 100:
             break
 
     if not rows:
         return jsonify({"error": "No valid rows found. Check CSV format: col A = schema_type, col B = docs URL."}), 400
 
+    return jsonify({"rows": rows, "total": len(rows)})
+
+
+@app.route("/api/bulk-generate-chunk", methods=["POST"])
+def api_bulk_generate_chunk():
+    """Process a small chunk of rows and return schema results as JSON.
+
+    Body (JSON):
+      rows: [[schema_type, url], ...]   – 1-10 rows recommended
+
+    Returns: JSON { results: [ { url, schema_type, meta_title, meta_description,
+                                  breadcrumb_schema, faq_schema, product_schema,
+                                  blog_schema, error } ] }
+    """
+    body  = request.get_json(force=True, silent=True) or {}
+    chunk = body.get("rows", [])
+
+    if not chunk:
+        return jsonify({"error": "No rows provided."}), 400
+
     token_dict = session.get("token")
+    results    = []
 
-    # ── Build output CSV in memory ────────────────────────────────────────
-    output = io.StringIO()
-    writer = csv.writer(output, quoting=csv.QUOTE_ALL, lineterminator="\n")
+    for item in chunk:
+        if not isinstance(item, list) or len(item) < 2:
+            continue
+        schema_type = str(item[0]).lower()
+        url         = str(item[1]).strip()
 
-    # Header row
-    writer.writerow([
-        "Page URL",
-        "Schema Type",
-        "Meta Title",
-        "Meta Description",
-        "Breadcrumb Schema",
-        "FAQ Schema",
-        "Product Schema",
-        "Blog Schema",
-        "Error",
-    ])
+        if schema_type not in ("none", "product", "blog"):
+            schema_type = "none"
 
-    for schema_type, url in rows:
+        row_result = {
+            "url":               url,
+            "schema_type":       schema_type,
+            "meta_title":        "",
+            "meta_description":  "",
+            "breadcrumb_schema": "",
+            "faq_schema":        "",
+            "product_schema":    "",
+            "blog_schema":       "",
+            "error":             "",
+        }
+
         try:
             doc_data = fetch_doc_data(url, token_dict=token_dict)
             page_url = doc_data.get("page_url") or ""
+            row_result["url"] = page_url or url
+
             logo_url = banner_url = None
             if page_url:
                 try:
                     logo_url, banner_url = fetch_site_assets(page_url)
                 except Exception:
                     pass
+
             outputs = build_all_schemas(
                 doc_data    = doc_data,
                 schema_type = schema_type,
                 logo_url    = logo_url,
                 banner_url  = banner_url,
             )
-            writer.writerow([
-                page_url,
-                schema_type,
-                outputs.get("meta_title", ""),
-                outputs.get("meta_description", ""),
-                outputs.get("breadcrumb_schema", ""),
-                outputs.get("faq_schema", ""),
-                outputs.get("product_schema", ""),
-                outputs.get("blog_schema", ""),
-                "",  # no error
-            ])
+            row_result["meta_title"]        = outputs.get("meta_title", "")
+            row_result["meta_description"]  = outputs.get("meta_description", "")
+            row_result["breadcrumb_schema"] = outputs.get("breadcrumb_schema", "")
+            row_result["faq_schema"]        = outputs.get("faq_schema", "")
+            row_result["product_schema"]    = outputs.get("product_schema", "")
+            row_result["blog_schema"]       = outputs.get("blog_schema", "")
+
         except Exception as exc:
-            writer.writerow([url, schema_type, "", "", "", "", "", "", str(exc)])
+            row_result["error"] = str(exc)
 
-    csv_bytes = output.getvalue().encode("utf-8-sig")  # BOM for Excel compatibility
+        results.append(row_result)
 
-    return Response(
-        csv_bytes,
-        mimetype="text/csv",
-        headers={
-            "Content-Disposition": "attachment; filename=schemas_output.csv",
-            "Content-Length": str(len(csv_bytes)),
-        },
-    )
+    return jsonify({"results": results})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -595,7 +609,26 @@ input::placeholder{color:#383860}
 .btn-bulk-submit:hover{opacity:.9;transform:translateY(-1px)}
 .btn-bulk-submit.loading{opacity:.6;pointer-events:none}
 
-/* Bulk progress */
+/* Bulk progress bar */
+#bulk-modal-progress{
+  display:none;margin-top:16px;
+}
+.progress-label{
+  font-size:.78rem;color:var(--muted);margin-bottom:7px;
+  display:flex;justify-content:space-between;
+}
+.progress-label b{color:var(--text)}
+.progress-bar-track{
+  width:100%;height:8px;background:rgba(255,255,255,.06);
+  border-radius:4px;overflow:hidden;
+}
+.progress-bar-fill{
+  height:100%;width:0%;border-radius:4px;
+  background:linear-gradient(90deg,var(--accent),var(--accent2));
+  transition:width .35s ease;
+}
+
+/* Bulk progress (outside modal) */
 #bulk-progress{
   display:none;margin-top:16px;padding:12px 16px;
   background:rgba(34,211,160,.06);border:1px solid rgba(34,211,160,.2);
@@ -753,6 +786,16 @@ input::placeholder{color:#383860}
       <div class="drop-label">Click to choose a CSV file</div>
       <div class="drop-sub">or drag and drop here &mdash; .csv files only</div>
       <div id="file-chosen"></div>
+    </div>
+
+    <div id="bulk-modal-progress">
+      <div class="progress-label">
+        <span id="bulk-progress-label">Processing rows&hellip;</span>
+        <b id="bulk-progress-count">0 / 0</b>
+      </div>
+      <div class="progress-bar-track">
+        <div class="progress-bar-fill" id="bulk-progress-fill"></div>
+      </div>
     </div>
 
     <button class="btn-bulk-submit" id="bulk-submit-btn" onclick="submitBulk()">
@@ -1007,67 +1050,183 @@ function dzDrop(e) {
   el.style.display = 'block';
 }
 
+// ── CSV helpers ────────────────────────────────────────────────────────────
+function parseCSV(text) {
+  // Simple RFC-4180 parser: handles quoted fields with embedded commas/newlines
+  const rows = [];
+  let i = 0;
+  while (i < text.length) {
+    const row = [];
+    while (i < text.length) {
+      if (text[i] === '"') {
+        // Quoted field
+        i++;
+        let field = '';
+        while (i < text.length) {
+          if (text[i] === '"' && text[i+1] === '"') { field += '"'; i += 2; }
+          else if (text[i] === '"') { i++; break; }
+          else { field += text[i++]; }
+        }
+        row.push(field);
+        if (text[i] === ',') i++;
+        else { i++; break; }  // newline or end
+      } else {
+        // Unquoted field
+        let field = '';
+        while (i < text.length && text[i] !== ',' && text[i] !== '\n' && text[i] !== '\r') {
+          field += text[i++];
+        }
+        row.push(field);
+        if (text[i] === ',') i++;
+        else { if (text[i] === '\r') i++; i++; break; }
+      }
+    }
+    if (row.length > 0 && !(row.length === 1 && row[0] === '')) rows.push(row);
+  }
+  return rows;
+}
+
+function csvEscapeField(val) {
+  const s = String(val == null ? '' : val);
+  if (s.includes(',') || s.includes('"') || s.includes('\n') || s.includes('\r')) {
+    return '"' + s.replace(/"/g, '""') + '"';
+  }
+  return s;
+}
+
+function buildOutputCSV(allResults) {
+  const header = ['Page URL','Schema Type','Meta Title','Meta Description',
+                  'Breadcrumb Schema','FAQ Schema','Product Schema','Blog Schema','Error'];
+  const lines  = [header.map(csvEscapeField).join(',')];
+  for (const r of allResults) {
+    lines.push([
+      r.url, r.schema_type, r.meta_title, r.meta_description,
+      r.breadcrumb_schema, r.faq_schema, r.product_schema, r.blog_schema, r.error
+    ].map(csvEscapeField).join(','));
+  }
+  return '\uFEFF' + lines.join('\n');  // BOM for Excel
+}
+
+// ── Bulk submit (chunked) ───────────────────────────────────────────────────
 async function submitBulk() {
   if (!_chosenFile) { alert('Please select a CSV file first.'); return; }
 
-  const btn  = document.getElementById('bulk-submit-btn');
-  const txt  = document.getElementById('bulk-btn-txt');
-  const spin = document.getElementById('bulk-btn-spin');
-  btn.classList.add('loading');
-  txt.textContent = 'Processing\u2026';
-  spin.style.display = 'inline-block';
+  const btn       = document.getElementById('bulk-submit-btn');
+  const txt       = document.getElementById('bulk-btn-txt');
+  const spin      = document.getElementById('bulk-btn-spin');
+  const progWrap  = document.getElementById('bulk-modal-progress');
+  const progLabel = document.getElementById('bulk-progress-label');
+  const progCount = document.getElementById('bulk-progress-count');
+  const progFill  = document.getElementById('bulk-progress-fill');
+  const errBox    = document.getElementById('err-box');
 
+  btn.classList.add('loading');
+  txt.textContent = 'Uploading CSV\u2026';
+  spin.style.display = 'inline-block';
+  progWrap.style.display = 'none';
+  errBox.style.display = 'none';
+
+  // ── Step 1: Upload CSV and get validated rows ─────────────────────────
   const formData = new FormData();
   formData.append('file', _chosenFile);
 
+  let allRows;
   try {
     const r = await fetch('/api/bulk-generate', { method: 'POST', body: formData });
-
-    // If server returns an error (non-CSV), parse as JSON for the message
+    const data = await r.json();
     if (!r.ok) {
-      const errBox = document.getElementById('err-box');
-      try {
-        const data = await r.json();
-        errBox.textContent = data.error || 'Bulk generation failed.';
-      } catch(_) {
-        errBox.textContent = 'Bulk generation failed (status ' + r.status + ').';
-      }
+      errBox.textContent = data.error || 'Failed to parse CSV (status ' + r.status + ').';
       errBox.style.display = 'block';
       closeBulkModal();
       return;
     }
-
-    // ── Trigger CSV download ──────────────────────────────────────────
-    const blob = await r.blob();
-    const url  = URL.createObjectURL(blob);
-    const a    = document.createElement('a');
-    a.href     = url;
-    a.download = 'schemas_output.csv';
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
-
-    // Show success pill in the bulk-progress bar (no panel rendering)
-    const prog = document.getElementById('bulk-progress');
-    prog.innerHTML = '\u2713 Bulk run complete &mdash; <b>schemas_output.csv</b> downloaded!';
-    prog.style.display = 'block';
-
-    closeBulkModal();
-
+    allRows = data.rows;  // [[schema_type, url], ...]
   } catch (err) {
-    const errBox = document.getElementById('err-box');
-    errBox.textContent = 'Network error: ' + err.message;
+    errBox.textContent = 'Network error during upload: ' + err.message;
     errBox.style.display = 'block';
-  } finally {
     btn.classList.remove('loading');
-    txt.textContent = '\u{1F680} Submit \u0026 Generate All';
+    txt.textContent = '\u{1F680} Submit & Generate All';
     spin.style.display = 'none';
-    // Reset file
-    _chosenFile = null;
-    document.getElementById('csv-file-input').value = '';
-    document.getElementById('file-chosen').style.display = 'none';
+    return;
   }
+
+  const total      = allRows.length;
+  const CHUNK_SIZE = 5;
+  let   done       = 0;
+  const allResults = [];
+
+  progWrap.style.display = 'block';
+  txt.textContent = 'Processing rows\u2026';
+
+  // ── Step 2: Process in chunks ─────────────────────────────────────────
+  for (let start = 0; start < total; start += CHUNK_SIZE) {
+    const chunk = allRows.slice(start, start + CHUNK_SIZE);
+    progLabel.textContent = `Processing rows ${done + 1}\u2013${Math.min(done + chunk.length, total)} of ${total}\u2026`;
+    progCount.textContent = done + ' / ' + total;
+    progFill.style.width  = Math.round((done / total) * 100) + '%';
+
+    try {
+      const r    = await fetch('/api/bulk-generate-chunk', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ rows: chunk }),
+      });
+      const data = await r.json();
+      if (!r.ok) {
+        // Soft error — record the chunk as failed and continue
+        for (const [stype, url] of chunk) {
+          allResults.push({ url, schema_type: stype, meta_title: '', meta_description: '',
+            breadcrumb_schema: '', faq_schema: '', product_schema: '', blog_schema: '',
+            error: data.error || 'Chunk failed (status ' + r.status + ')' });
+        }
+      } else {
+        allResults.push(...data.results);
+      }
+    } catch (err) {
+      for (const [stype, url] of chunk) {
+        allResults.push({ url, schema_type: stype, meta_title: '', meta_description: '',
+          breadcrumb_schema: '', faq_schema: '', product_schema: '', blog_schema: '',
+          error: 'Network error: ' + err.message });
+      }
+    }
+
+    done += chunk.length;
+    progCount.textContent = done + ' / ' + total;
+    progFill.style.width  = Math.round((done / total) * 100) + '%';
+  }
+
+  // ── Step 3: Build and download CSV ───────────────────────────────────
+  progLabel.textContent = '\u2713 Done! Preparing download\u2026';
+  const csvText = buildOutputCSV(allResults);
+  const blob    = new Blob([csvText], { type: 'text/csv;charset=utf-8;' });
+  const dlUrl   = URL.createObjectURL(blob);
+  const a       = document.createElement('a');
+  a.href        = dlUrl;
+  a.download    = 'schemas_output.csv';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(dlUrl);
+
+  const successRows = allResults.filter(r => !r.error).length;
+  const errorRows   = allResults.filter(r =>  r.error).length;
+
+  const prog = document.getElementById('bulk-progress');
+  prog.innerHTML = `\u2713 Bulk run complete &mdash; <b>schemas_output.csv</b> downloaded! ` +
+    `(${successRows} succeeded${ errorRows ? ', ' + errorRows + ' errors — see Error column' : ''}).`;
+  prog.style.display = 'block';
+
+  closeBulkModal();
+
+  // Reset
+  _chosenFile = null;
+  document.getElementById('csv-file-input').value = '';
+  document.getElementById('file-chosen').style.display = 'none';
+  progWrap.style.display = 'none';
+  progFill.style.width   = '0%';
+  btn.classList.remove('loading');
+  txt.textContent = '\u{1F680} Submit & Generate All';
+  spin.style.display = 'none';
 }
 
 // \u2500\u2500 Organisation Modal \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
